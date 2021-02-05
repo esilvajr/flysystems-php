@@ -3,6 +3,7 @@
 
 namespace Arquivei\Flysystems\GoogleCloudStorage;
 
+use Arquivei\Flysystems\ArquiveiStorage\Adapters\LogMonologAdapter;
 use Arquivei\Flysystems\GoogleCloudStorage\Adapters\GoogleStorageAdapter;
 use Google\Cloud\Storage\StorageClient;
 use Illuminate\Filesystem\FilesystemManager;
@@ -14,6 +15,7 @@ use League\Flysystem\Filesystem;
 
 class GoogleCloudStorageProvider extends ServiceProvider
 {
+    private $logger;
     /**
      * Create a Filesystem instance with the given adapter.
      *
@@ -40,20 +42,37 @@ class GoogleCloudStorageProvider extends ServiceProvider
     public function boot()
     {
         $factory = $this->app->make('filesystem'); /* @var FilesystemManager $factory */
-
-        $factory->extend('gcs', function ($app, $config) {
-            $storageClient = new StorageClient([
-                'projectId' => $config['project_id'],
-                'keyFilePath' => array_get($config, 'key_file'),
-            ]);
-            $bucket = $storageClient->bucket($config['bucket']);
-            $pathPrefix = array_get($config, 'path_prefix');
-
-            $adapter = new GoogleStorageAdapter($storageClient, $bucket, $pathPrefix, $config);
-            return $this->createFilesystem($adapter, $config);
-        });
+        $this->logger = new LogMonologAdapter();
+        $factory->extend(
+            'gcs',
+            function ($app, $config) {
+                $storageClient = new StorageClient(
+                    [
+                        'projectId' => $config['project_id'],
+                        'keyFilePath' => array_get($config, 'key_file'),
+                        'restRetryFunction' => function ($exception) {
+                            $this->logger->error(
+                                '[Arquivei/flysystems-php::GoogleCloudStorage] ' .
+                                'Error executing a function on GCS. The function will be retried',
+                                [
+                                    'message' => $exception->getMessage(),
+                                    'exception' => get_class($exception),
+                                ]
+                            );
+                            if ($exception->getCode() == 404) {
+                                return false;
+                            }
+                            return true;
+                        },
+                    ]
+                );
+                $bucket = $storageClient->bucket($config['bucket']);
+                $pathPrefix = array_get($config, 'path_prefix');;
+                $adapter = new GoogleStorageAdapter($storageClient, $bucket, $pathPrefix, $config);
+                return $this->createFilesystem($adapter, $config);
+            }
+        );
     }
-
 
     /**
      * Register bindings in the container.
